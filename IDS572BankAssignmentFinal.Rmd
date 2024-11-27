@@ -1,0 +1,718 @@
+
+#load the tidyverse set of libraries - for data manipulations
+
+```{r}
+library(dplyr)
+library(tidyverse)
+
+
+# importing dataset from the local
+bankData <- read_excel("/Applications/Study Material/Study Material/R Programming /BankStatement.xlsx")
+```
+
+# (A) DATA EXPLORATION
+
+```{r}
+#structure of the dataset ( getting variable types of the dataset)
+str(bankData)
+
+#What is the size of the dataset?
+#How many examples and variables are present in the dataset.
+ncol(bankData)
+
+nrow(bankData)
+
+#Are there any missing values?
+colSums(is.na(bankData))
+
+#To get the names of columns which have missing values
+colnames(bankData)[colSums(is.na(bankData))>0]
+
+#Convert the character variables to categorical (factor)
+bData <- bankData %>% mutate_if(is.character,as.factor)
+str(bData)
+
+#Obtain summary statistics on the data.
+summary(bData)
+```
+
+
+# (B) WHAT IS THE PROPORTION OF YES/NO CASES?
+
+```{r}
+bData %>% group_by(y) %>% summarize(n()) %>% view()
+
+#To calculate the proportion of examples in each class                                  
+bData %>% group_by(y) %>% summarise(n=n()) %>% mutate(proportion=n/sum(n)) %>% view()
+
+#How does the response (y) vary by values of other variables? Conduct some analyses using group_by and summarize; 
+
+#Group by using Job
+bData %>% group_by(job, y) %>% summarize( n=n()) %>% mutate(freq=n/sum(n))
+boxplot(bData$age)
+
+#Group by using Age
+
+ggplot(tmp, aes(y=propResp, x=ageGroup, fill=y))+geom_bar(stat = 'identity' , position = position_dodge())
+
+
+
+
+```
+
+# (C) PROBE THE DATA TO GET A DEEPER UNDERSTANDING
+
+```{r}
+# (i)How does response vary by age? Consider some age groups ?
+bData$ageGroup <- cut(bData$age, breaks = c(0,18,35,60,95))
+bData %>% group_by(ageGroup, y) %>% tally() %>% mutate(propResp=n/sum(n))
+bData %>% group_by(ageGroup, y) %>% summarize( n=n()) %>% mutate(freq=n/sum(n))
+
+#using bar graph with the age group
+ggplot(tmp, aes(y=propResp, x=ageGroup, fill=y))+geom_bar(stat = 'identity', position = position_dodge())
+
+#Examine how duration and number of calls with clients relates to their response to the marketing
+#(ii) Look at duration of calls 
+ggplot(bData, aes(duration,  color=y) ) + geom_boxplot()
+
+
+#using density plot
+ggplot(bData, aes(duration,  color=y) ) + geom_density() 
+#the plot is left-skewed distribution that is most calls are relatively short, and some a overly long.
+
+#To look at the summary of number of calls (campaign)
+summary(bData$campaign)
+
+ggplot(bData, aes(campaign,  color=y) ) + geom_boxplot()
+#Observation of the above : most customers have ben contacted 1 to 3 times and a few have been contacted huge number times (max 63)
+
+#Examine duration and number of calls relationship, and by response(y=yes/no)
+
+ggplot(bData, aes(duration, campaign, color=y))+geom_point()
+#Observation of the above visual : most responders were contacted less often and had longer duration calls as number of calls increases beyond 6-8 times , fewer customers are likely to respond. 
+```
+
+# Q2. DEVELOP MODELS
+
+```{r}
+# (i) Which variables do you include in the model?
+mData <- bData %>% select(-c('contact', 'day', 'month', 'duration', 'campaign', 'pdays', 'previous', 'poutcome'))
+#Removing ageGroup which we created for data exploration
+mData <- mData %>% select(-c('ageGroup'))
+
+#Split the data into training and test sets – what proportion do you use for training? Training set = 70 % and Test data = 30%
+nr=nrow(mData)
+trnIndex = sample(1:nr, size = round(0.7*nr), replace=FALSE) #get a random 70%sample of row-indices
+mdTrn=mData[trnIndex,]   #training data 
+mdTst = mData[-trnIndex,]  #test data 
+```
+
+# (A) DEVELOPING RPART MODEL
+
+```{r}
+library(rpart)
+
+#develop a rpart decision tree model
+rpDT1 <- rpart(y ~ ., data=mdTrn, method="class")
+rpDT2 <- rpart(y ~ ., data=mdTrn, method="class", parms=list(prior=c(.5,.5)))
+
+summary(rpDT1)
+head(predict(rpDT1, data=mdTst))
+summary(rpDT2)
+levels(mdTrn$y)
+
+# Determine the optimal cp value to obtain a best pruned tree. Describe how you go about doing this
+
+# 1. use cp=0 to get start, which means no pruning and gets the complete tree
+rpDT1 = rpart(y ~ ., data=mdTrn, method="class", control = rpart.control(cp = 0.0), parms=list(prior=c(.5,.5)))
+
+# 2. find the row (index) corresponding to the min xerror. xerror is cross validation error for different cp values.
+mincp_i <- which.min(rpDT1$cptable[, 'xerror'])  
+
+# 3. we can find the minimum xerror based on its index, and then calculate optimal error threshold, which is defined as the min_xError + xstd
+optError <- rpDT1$cptable[mincp_i, "xerror"] + rpDT1$cptable[mincp_i, "xstd"]
+
+# 4. with optimal error threshold, we return to cptable, and find the row(index) of the xerror value which is closest to optError
+optCP_i <- which.min(abs( rpDT1$cptable[,"xerror"] - optError))
+
+# 5. finally, get the best CP value based on the optCP_i
+optCP <- rpDT1$cptable[optCP_i, "CP"]
+print(optCP)
+
+#Now we can prune the tree based on this best CP value
+plot(rpDT2, uniform=TRUE,  main="Decision Tree for Bank marketing response")
+text(rpDT2, use.n=TRUE, all=TRUE, cex=.7) 
+
+plot(rpDT1_p, uniform=TRUE,  main="Decision Tree for Bank Marketing")
+rpDT2_p <- prune(rpDT2, cp = optCP)
+
+summary(rpDT2)
+
+# Variable importance: Which variables are important in the decisions by the tree model – discuss the variable importance.
+importance <- rpDT1_p$variable.importance
+print(importance)
+
+#Grow a tree
+rpDT1 = rpart(y ~ ., data=mData, method="class", control = rpart.control(cp = 0.0), parms=list(prior=c(.5,.5)))
+
+#Tree size and performance for different cp (complexity parameter) values
+printcp(rpDT1)
+
+# Evaluate the performance of the model on training and test data? What do you conclude regarding overfit? 
+train_pred=predict(rpDT1_p, mdTrn, type='class')
+test_pred=predict(rpDT1_p, mdTst, type='class')
+mean(train_pred==mdTrn$y)
+
+mean(mdTst$y==test_pred)
+
+dim(mdTrn) 
+dim(mdTst)
+
+
+#develop a tree on the training data
+rpDT2=rpart(y ~ ., data=mdTrn, method="class",  control = rpart.control(cp = 0.0), parms=list(prior=c(.5,.5)) )
+
+
+
+
+#Obtain the model's predictions on the training data
+predTrn=predict(rpDT2, mdTrn, type='class')
+```
+
+```{r}
+library('ROCR')
+#Accuracy
+mean(predTrn==mdTrn$y)
+
+#confusion matrix for training data
+table(actuals=bData$y, preds=predDT1)
+
+#confusion matrix for test data
+table(pred = predTrn, true=mdTrn$y)
+
+#ROC
+
+scoreTst=predict(rpDT2_p, mdTst, type="prob")[,'yes']  
+
+rocPredTst = prediction(scoreTst, mdTst$y, label.ordering = c('no', 'yes'))  
+scoreTrn=predict(rpDT2_p, mdTrn, type="prob")[,'yes'] 
+rocPredTrn =prediction(scoreTrn, mdTrn$y, label.ordering = c('no', 'yes')) 
+
+#obtain performance using the function from ROCR, then plot
+perfROCTst=performance(rocPredTst, "tpr", "fpr")
+plot(perfROCTst)
+abline(0,1)
+
+#PERFORMCE ON THE TRAINING DATA
+scoreTrn=predict(rpDT2_p, mdTrn, type="prob")[,'yes']
+rocTestTst = prediction(scoreTrn, mdTrn$y, label.ordering = c('no', 'yes'))  
+perfROCTst1=performance(rocPredTrn, "tpr", "fpr")
+plot(perfROCTst1)
+abline(0,1)
+
+#PERFORMCE ON THE TEST DATA
+perfROCTst <- performance(rocPredTst, "tpr", "fpr")
+plot(perfROCTst)
+abline(0,1)
+
+#AUC value for test
+aucPerf=performance(rocPredTst, "auc")
+aucPerf@y.values 
+
+#AUC value for training
+aucPerf=performance(rocPredTrn, "auc")
+aucPerf@y.values
+
+#Accuracy for test
+accPerf <-performance(rocPredTst, "acc")
+plot(accPerf)
+#Accuracy for training
+accPerf <-performance(rocPredTrn, "acc")
+plot(accPerf)
+
+#optimal threshold for max overall accuracy
+accPerf@x.values[[1]][which.max(accPerf@y.values[[1]])]
+
+#optimal cost with different costs for fp and fn
+costPerf = performance(rocPredTst, "cost", cost.fp = 1, cost.fn = 3)
+costPerf@x.values[[1]][which.min(costPerf@y.values[[1]])]
+```
+
+# LIFT CURVE
+
+```{r}
+#Lift curve for test
+liftPerf_rp <-performance(rocPredTst, "lift", "rpp")
+plot(liftPerf_rp, main="Lift chart")
+
+#lift curve for training
+liftPerf <-performance(rocTestTst, "lift", "rpp")
+plot(liftPerf, main="Lift chart")
+```
+
+#Calculate the decile lift table.
+
+```{r}
+#Dividing the data into 10 (for decile lift) equal groups
+trnSc["bucket"]<- ntile(-trnSc[,"score"], 10)  
+
+#this creates a new column with group number for each row
+
+#grouping the data by the 'buckets', and obtain summary statistics 
+dLifts <- trnSc %>% group_by(bucket) %>% summarize(count=n(), numResponse=sum(y=="yes"), 
+              respRate=numResponse/count,  cumRespRate=cumsum(numResponse)/cumsum(count),
+              lift = cumRespRate/(sum(trnSc$y=="yes")/nrow(trnSc)) ) 
+
+#Viewing the table
+dLifts
+
+
+#Plots
+plot(dLifts$bucket, dLifts$lift, xlab="deciles", ylab="Cumulative Decile Lift", type="l")
+barplot(dLifts$numResponse, main="numDefaults by decile", xlab="deciles")
+
+
+
+#Analyses for the above test data
+tstSc["bucket"]<- ntile(-tstSc[,"score"], 10)  
+# this creates a new column with group number for each row
+
+#grouping the data by the 'buckets', and obtaining summary statistics 
+dLifts <- trnSc %>% group_by(bucket) %>% summarize(count=n(), numResponse=sum(y=="yes"), 
+                                                   respRate=numResponse/count,  cumRespRate=cumsum(numResponse)/cumsum(count),
+                                                   lift = cumRespRate/(sum(trnSc$y=="yes")/nrow(trnSc)) ) 
+
+#look at the table
+dLifts
+```
+
+#C50 DECISION TREE
+
+```{r}
+library(C50)
+library('ROCR')
+library(ggplot2)
+
+#build a tree model
+c5DT1 <- C5.0(y ~ ., data=mdTrn, control=C5.0Control(minCases=10))
+
+#model details
+summary(c5DT1)
+
+#usiing costs to try overcome class imbalance in data
+costMatrix <- matrix(c(
+    0,   1,
+    10,  0),
+   2, 2, byrow=TRUE)
+rownames(costMatrix) <- colnames(costMatrix) <- c("yes", "no")
+control=C5.0Control(minCases=10)
+
+#costMatrix set up
+costMatrix 
+
+#Training the model using cost
+c5DT1_cost <- C5.0(y ~ ., data=mdTrn, control=C5.0Control(minCases=10), costs=costMatrix)
+summary(c5DT1_cost)
+
+#plotting 
+plot(c5DT1_cost)
+
+#Test model using cost
+c5DT1_cost_test <- C5.0(y ~ ., data=mdTst, control=C5.0Control(minCases=10), costs=costMatrix)
+summary(c5DT1_cost_test)
+
+#plotting the test data tree
+plot(c5DT1_cost_test)
+
+#performance for training and test 
+predTrn <- predict(c5DT1_cost, mdTrn)
+table( pred = predTrn, true=mdTrn$y)
+mean(predTrn==mdTrn$y)
+
+predTst <- predict(c5DT1_cost_test, mdTst)
+table( pred = predTst, true=mdTst$y)
+mean(predTst==mdTst$y)
+
+#Number of nodes
+cat("Number of Nodes:", c5DT1_cost$size, "\n") 
+
+#Developing the model using rules 
+c5rules1 <- C5.0(y ~ ., data=mdTrn, control=C5.0Control(minCases=10), rules=TRUE)
+summary(c5rules1)
+
+#trying with costs and rules together for training and test
+c5rules1_cost <- C5.0(y ~ ., data=mdTrn, control=C5.0Control(minCases=10), rules=TRUE, costs=costMatrix)
+summary(c5rules1_cost)
+c5rules1_cost_test <- C5.0(y ~ ., data=mdTst, control=C5.0Control(minCases=10), rules=TRUE, costs=costMatrix)
+summary(c5rules1_cost_test)
+
+#performance of training and test model with rules.
+predTrnRule <- predict(c5rules1_cost, mdTrn)
+table( pred = predTrnRule, true=mdTrn$y)
+mean(predTrnRule==mdTrn$y)
+
+predTstRule <- predict(c5rules1_cost_test, mdTst)
+table( pred = predTstRule, true=mdTst$y)
+mean(predTstRule==mdTst$y)
+```
+
+#Random Forest Model
+
+```{r}
+install.packages("randomForest")
+library('ROCR')
+library('randomForest')
+
+# for reproducible results, set a specific value for the random number seed
+set.seed(576)
+
+rfModel<- randomForest(y ~ ., data=mdTrn, ntree=200, importance=TRUE )
+
+importance(rfModel) |> View()
+varImpPlot(rfModel)
+
+
+# Classification performance
+CTHRESH = 0.5
+
+# For training data
+rfPred<-predict(rfModel,mdTrn, type="prob")
+pred = ifelse(rfPred[, 'yes'] >= CTHRESH, 'yes', 'no')
+table( pred = pred, true=mdTrn$y)
+mean(pred==mdTrn$y)
+
+# For test data
+rfPred_n<-predict(rfModel,mdTst, type="prob")
+pred_n = ifelse(rfPred_n[, 'yes'] >= CTHRESH, 'yes', 'no')
+table( pred_n = pred_n, true=mdTst$y)
+mean(pred_n==mdTst$y)
+
+#the confusion matrix, 
+
+rf_roc_pred <- prediction(predict(rfModel,mdTst, type="prob")[,2], mdTst$y)
+perf_rfTst <- performance(rf_roc_pred, "tpr", "fpr")
+
+#ROC curve for the randomForest model for test data
+perf_rfTst=performance(prediction(predict(rfModel,mdTst, type="prob")[,2], mdTst$y), "tpr", "fpr")
+plot(perf_rfTst)
+
+rf_roc_pred_n <- prediction(predict(rfModel,mdTrn, type="prob")[,2], mdTrn$y)
+perf_rfTrn <- performance(rf_roc_pred_n, "tpr", "fpr")     
+
+# ROC curve for the randomForest model for training  data
+perf_rfTrn=performance(prediction(predict(rfModel,mdTrn, type="prob")[,2], mdTrn$y), "tpr", "fpr")
+plot(perf_rfTrn)
+
+# AUC value of test
+aucPerf=performance(rf_roc_pred, "auc")
+aucPerf@y.values
+
+# AUC value of training 
+aucPerf=performance(rf_roc_pred_n, "auc")
+aucPerf@y.values
+
+# Accuracy of Test
+accPerf <-performance(rf_roc_pred, "acc")
+plot(accPerf)
+
+# Accuracy of Training 
+accPerf <-performance(rf_roc_pred_n, "acc")
+plot(accPerf)
+
+# optimal threshold for max overall accuracy
+accPerf@x.values[[1]][which.max(accPerf@y.values[[1]])]
+
+
+# optimal cost with different costs for fp and fn for Test
+costPerf = performance(rf_roc_pred, "cost", cost.fp = 1, cost.fn = 3)
+costPerf@x.values[[1]][which.min(costPerf@y.values[[1]])]
+
+# optimal cost with different costs for fp and fn for Training
+costPerf = performance(rf_roc_pred_n, "cost", cost.fp = 1, cost.fn = 3)
+costPerf@x.values[[1]][which.min(costPerf@y.values[[1]])]
+
+
+# Lift curve Test
+liftPerf_rf <-performance(rf_roc_pred, "lift", "rpp")
+plot(liftPerf_rf, main="Lift chart")
+
+# Lift curve Train
+liftPerf <-performance(rf_roc_pred_n, "lift", "rpp")
+plot(liftPerf, main="Lift chart")
+
+
+# lift analyses
+set.seed(576)
+rfModel = randomForest(y ~ ., data=mdTrn, ntree=200, importance=TRUE)
+
+# Predicted probabilities for the test set
+rfPred <- predict(rfModel, mdTst, type = "prob")
+
+# Extracted probabilities of the positive class (assuming 'yes' is the positive class)
+prob_positive <- rfPred[, 'yes']
+
+# Actual values of the target variable
+actual <- mdTst$y
+
+# data frame with the probabilities and actual values
+results_df <- data.frame(actual = actual, prob_positive = prob_positive)
+
+# Sorted the data by predicted probability in descending order
+results_df <- results_df %>% arrange(desc(prob_positive))
+
+# Calculation of cumulative gains and lift
+results_df <- results_df %>%
+  mutate(
+    cumulative_positive = cumsum(actual == 'yes'),
+    total_positive = sum(actual == 'yes'),
+    cumulative_lift = cumulative_positive / (1:n())
+  )
+
+# lift table
+lift_table <- results_df %>%
+  mutate(percentile = ntile(prob_positive, 10)) %>%  # Divide into deciles
+  group_by(percentile) %>%
+  summarise(
+    total = n(),
+    positives = sum(actual == 'yes'),
+    cumulative_positives = cumsum(positives),
+    lift = positives / mean(positives),
+    cumulative_lift = cumulative_positives / (percentile * mean(positives))
+  )
+
+# View of the lift table
+print(lift_table)
+```
+
+#Developing gbm model
+
+```{r}
+
+install.packages("gbm")
+library(gbm)
+#gbm with n.trees = 1000 , shrinkage = 0.5 , interaction.depth = 4
+gbm_M1 <- gbm(formula=unclass(y)-1 ~., data=mdTrn,distribution = "bernoulli", n.trees=1000, shrinkage=0.5, interaction.depth = 4, bag.fraction=0.5, cv.folds = 5,  n.cores=NULL)  
+print(mean(gbm_M1$cv.error))
+
+#gbm with n.trees = 500 , shrinkage = 0.3 , interaction.depth = 3
+gbm_M1_a <- gbm(formula=unclass(y)-1 ~., data=mdTrn,distribution = "bernoulli", n.trees=500, shrinkage=0.1, interaction.depth = 3, bag.fraction=0.5, cv.folds = 5,  n.cores=NULL)  
+print(mean(gbm_M1_a$cv.error))
+
+#gbm with n.trees = 425 , shrinkage = 0.1 , interaction.depth = 2
+gbm_M1_b <- gbm(formula=unclass(y)-1 ~., data=mdTrn,distribution = "bernoulli", n.trees=425, shrinkage=0.1, interaction.depth = 2, bag.fraction=0.5, cv.folds = 10,  n.cores=NULL)  
+print(mean(gbm_M1_b$cv.error))
+
+#gbm with n.trees = 100 , shrinkage = 0.025 , interaction.depth = 4 , cv.folds=10
+gbm_M1_new <- gbm(formula=unclass(y)-1 ~., data=mdTrn,distribution = "bernoulli", n.trees=100, shrinkage=0.025, interaction.depth = 4, bag.fraction=0.5, cv.folds = 5,  n.cores=NULL)  
+print(mean(gbm_M1_new$cv.error))
+
+#bestIter gives the best iteration value, which we can use for obtaining predictions
+bestIter<-gbm.perf(gbm_M1_new, method='cv')
+
+#Performance
+
+scores_gbmM1<- predict(gbm_M1_new, newdata = mdTrn, n.tree= bestIter, type="response")
+scores_gbmM1_n<- predict(gbm_M1_new, newdata = mdTst, n.tree= bestIter, type="response")
+head(scores_gbmM1)
+
+predicted_probabilities_trn <- predict(gbm_M1_new, newdata = mdTrn, n.trees = 100, type = "response")
+predicted_probabilities_tst <- predict(gbm_M1_new, newdata = mdTst, n.trees = 100, type = "response")
+
+#Converting into labels for training
+threshold <- 0.5
+predicted_labels <- ifelse(predicted_probabilities_trn > threshold, "yes", "no")
+mean(predicted_labels==mdTrn$y)
+
+#Converting into labels for test
+threshold <- 0.5
+predicted_labels_n <- ifelse(predicted_probabilities_tst > threshold, "yes", "no")
+mean(predicted_labels_n==mdTst$y)
+#Confusion table
+table(pred = pred_gbmM1, true=gbm_M1$y)
+table(pred =predicted_labels, true=gbm_M1_new$y)
+#Accuracy
+mean(predTrn==mdTrn$y)
+
+
+#ROC curve For Test and Train data
+pred_gbmM1 <- prediction( scores_gbmM1, mdTrn$y, label.ordering = c("no", "yes"))
+rocPerf_gbmM1 <-performance(pred_gbmM1, "tpr","fpr")
+plot(rocPerf_gbmM1)
+abline(a=0, b= 1)
+
+pred_gbmM1_n <- prediction( scores_gbmM1_n, mdTst$y, label.ordering = c("no", "yes"))
+rocPerf_gbmM1_n <-performance(pred_gbmM1_n, "tpr","fpr")
+plot(rocPerf_gbmM1_n)
+abline(a=0, b= 1)
+
+#AUC value for trainng
+aucPerf=performance(pred_gbmM1, "auc")
+aucPerf@y.values #0.5 < AUC < 0.7: The model has a low ability to discriminate between positive and negative classes.
+
+#AUC value for testing
+aucPerf=performance(pred_gbmM1_n, "auc")
+aucPerf@y.values #0.5 < AUC < 0.7: The model has a low ability to discriminate between positive and negative classes.
+
+#Accuracy for training
+accPerf <-performance(pred_gbmM1, "acc")
+plot(accPerf)
+
+#lift curve for training
+gbmliftPerfTrn <-performance(pred_gbmM1, "lift", "rpp")
+plot(gbmliftPerfTrn, main="Lift chart")
+
+#lift curve for testing
+gbmliftPerfTst <-performance(pred_gbmM1_n, "lift", "rpp")
+plot(gbmliftPerfTst, main="Lift chart")
+
+#Accuracy plot for testing
+accPerf_n <-performance(pred_gbmM1_n, "acc")
+plot(accPerf_n)
+ #optimal threshold for max overall accuracy
+accPerf@x.values[[1]][which.max(accPerf@y.values[[1]])] 
+
+
+```
+
+#Develop a naive-Bayes model
+
+```{r}
+
+library(naivebayes)
+
+#Plots to check the continuous variables are skewed.
+plot(density(mdTrn$age), main = "Age Density Plot")
+plot(density(mdTrn$balance), main = "Age Density Plot")
+
+#training model
+nbM1_trn <-naive_bayes(y ~ ., data = mdTrn) 
+nbM1_trn
+#plotting
+plot(nbM1_trn)
+
+#test model
+nbM1_tst <-naive_bayes(y ~ ., data = mdTst)
+nbM1_tst
+
+#plotting
+plot(nbM1_tst)
+
+#Obtain predictions for training data
+nbPredTrn = predict(nbM1_trn, mdTrn, type='prob')
+head(nbPredTrn)
+
+#Obtain predictions for test data
+nbPredtst = predict(nbM1_tst, mdTst, type='prob')
+head(nbPredtst)
+
+#Performance for training and test
+pred_nbTrn =ifelse(nbPredTrn[, 2] > 0.5, "yes", "no")
+table(pred=nbPredTrn[, 2] > 0.5, actual=mdTrn$y)
+mean(pred_nbTrn == mdTrn$y)
+
+pred_nbTst =ifelse(nbPredtst[, 2] > 0.5, "yes", "no")
+table(pred=nbPredtst[, 2] > 0.5, actual=mdTst$y)
+mean(pred_nbTst == mdTst$y)
+
+#Developing a naive-Bayes model with useKernel=True 
+#For Training Data
+nbM2_kernel <-naive_bayes(y ~ ., data = mdTrn, usekernel = T) 
+nbM2_kernel_tst <-naive_bayes(y ~ ., data = mdTst, usekernel = T) 
+plot(nbM2_kernel)
+
+nbPredTrn_kernel <- predict(nbM2_kernel, mdTrn, type='prob')
+
+pred_nbTrn_kernel <- ifelse(nbPredTrn_kernel[, 2] > 0.7896977, "yes", "no")
+table(pred=nbPredTrn_kernel[, 2] > 0.5, actual=mdTrn$y)
+
+#For Test Data
+nbPredTst_kernel = predict(nbM2_kernel_tst, mdTst, type='prob')
+
+pred_nbTst_kernel =ifelse(nbPredTst_kernel[, 2] > 0.8462133, "yes", "no")
+table(pred=nbPredTst_kernel[, 2] > 0.5, actual=mdTst$y)
+mean(pred_nbTst_kernel == mdTst$y)
+
+#Evaluate performance with KDE
+# for training Data
+nbrocPredTrn_kernel = prediction(predict(nbM2_kernel,mdTrn, type="prob")[,2], mdTrn$y)
+
+perf_nbTrn_kernel=performance(prediction(predict(nbM2_kernel,mdTrn, type="prob")[,2], mdTrn$y), "tpr", "fpr")
+plot(perf_nbTrn_kernel)
+abline(0,1) 
+
+#AUC value
+aucPerf=performance(nbrocPredTrn_kernel, "auc")
+aucPerf@y.values
+
+#Accuracy 
+accPerf <-performance(nbrocPredTrn_kernel, "acc")
+plot(accPerf)
+
+ #optimal threshold for max overall accuracy
+accPerf@x.values[[1]][which.max(accPerf@y.values[[1]])]
+
+
+#optimal cost with different costs for fp and fn
+costPerf = performance(nbrocPredTrn_kernel, "cost", cost.fp = 1, cost.fn = 3)
+costPerf@x.values[[1]][which.min(costPerf@y.values[[1]])]
+
+
+
+#Lift curve
+nbliftPerfTrn <-performance(nbrocPredTrn_kernel, "lift", "rpp")
+plot(nbliftPerfTrn, main="Lift chart")
+
+# for Test Data
+nbrocPredTst_kernel = prediction(predict(nbM2_kernel_tst,mdTst, type="prob")[,2], mdTst$y)
+
+perf_nbTst_kernel=performance(prediction(predict(nbM2_kernel_tst,mdTst, type="prob")[,2], mdTst$y), "tpr", "fpr")
+plot(perf_nbTst_kernel)
+abline(0,1) 
+
+#AUC value
+aucPerf=performance(nbrocPredTst_kernel, "auc")
+aucPerf@y.values
+
+#Accuracy 
+accPerf <-performance(nbrocPredTst_kernel, "acc")
+plot(accPerf)
+
+#optimal threshold for max overall accuracy
+accPerf@x.values[[1]][which.max(accPerf@y.values[[1]])]
+
+
+#optimal cost with different costs for fp and fn
+costPerf = performance(nbrocPredTst_kernel, "cost", cost.fp = 1, cost.fn = 3)
+costPerf@x.values[[1]][which.min(costPerf@y.values[[1]])]
+
+
+
+#Lift curve
+nbliftPerfTst_nb <-performance(nbrocPredTst_kernel, "lift", "rpp")
+plot(nbliftPerfTst_nb, main="Lift chart")
+```
+
+#Combined ROC Curve for all the models
+
+```{r}
+plot(perf_nbTst_kernel, col='black') 
+plot(perfROCTst, add=TRUE, col='blue') 
+plot(perf_rfTst, add=TRUE, col='green') 
+plot(rocPerf_gbmM1_n, add=TRUE, col='red')
+legend('bottomright', c('nB', 'rpartDT', 'rf', 'gbm'), lty=1, col=c('black', 'blue', 'green', 'red'))
+abline(0,1) 
+```
+
+#Combined LIFT Curve for all the models
+
+```{r}
+
+plot(liftPerf_rp, main="Lift chart", col='red')
+plot(liftPerf_rf, main="Lift chart", add=TRUE, col='blue')
+plot(nbliftPerfTst, main="Lift chart", add=TRUE, col='green')
+plot(gbmliftPerfTst, main="Lift chart", add=TRUE, col='black')
+legend('bottomright', c('rpartDT', 'rf', 'nb','gbm'), lty=1, col=c('red', 'blue', 'green','black'))
+abline(0,1) 
+
+```
+
